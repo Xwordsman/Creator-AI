@@ -60,24 +60,78 @@ test('creation retries freeze a mode-aware request key and never auto-submit', a
   await submit.click();
   await expect(page.getByRole('alert')).toContainText('创建结果暂未确认');
   expect(fixture.creates[0]!.body.teamMode).toBe('staged');
-  await submit.click();
+  await expect(page.getByRole('radio', { name: '动态协作', exact: true })).toBeDisabled();
+  await expect(page.getByLabel('这次，你想聊什么？')).toBeDisabled();
+  await expect(submit).toBeDisabled();
+  await expectNoOverflow(page);
+  await page.getByRole('button', { name: '原样重试创作请求' }).click();
   await expect.poll(() => fixture.creates.length).toBe(2);
   expect(fixture.creates[0]!.key).toBe(fixture.creates[1]!.key);
+  await page.reload();
+  await expect(page.getByRole('button', { name: '原样重试创作请求' })).toBeVisible();
+  expect(fixture.creates).toHaveLength(2);
+  await page.getByRole('button', { name: '原样重试创作请求' }).click();
+  await expect.poll(() => fixture.creates.length).toBe(3);
+  expect(fixture.creates[2]).toEqual(fixture.creates[0]);
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '核对后开始新创作' }).click();
   await page
     .getByRole('radiogroup', { name: '专家团协作方式', exact: true })
     .getByText('动态协作', { exact: true })
     .click();
   await submit.click();
-  await expect.poll(() => fixture.creates.length).toBe(3);
-  expect(fixture.creates[2]!.body.teamMode).toBe('dynamic');
-  expect(fixture.creates[2]!.key).not.toBe(fixture.creates[1]!.key);
-  await submit.click();
   await expect.poll(() => fixture.creates.length).toBe(4);
-  expect(fixture.creates[3]).toEqual(fixture.creates[2]);
+  expect(fixture.creates[3]!.body.teamMode).toBe('dynamic');
+  expect(fixture.creates[3]!.key).not.toBe(fixture.creates[2]!.key);
+  await page.getByRole('button', { name: '原样重试创作请求' }).click();
+  await expect.poll(() => fixture.creates.length).toBe(5);
+  expect(fixture.creates[4]).toEqual(fixture.creates[3]);
   await page.reload();
-  expect(fixture.creates).toHaveLength(4);
+  expect(fixture.creates).toHaveLength(5);
+  await expect(page.getByRole('radio', { name: '动态协作', exact: true })).toBeChecked();
+  await expect(page.getByRole('radio', { name: '动态协作', exact: true })).toBeDisabled();
+});
+
+test('refuses a new creation when the tab cannot retain its idempotency record', async ({
+  page,
+}) => {
+  const fixture = await dynamicFixture(page);
+  await page.goto('/');
   await selectTeam(page);
-  await expect(page.getByRole('radio', { name: '分阶段协作', exact: true })).toBeChecked();
+  await page.evaluate(() => {
+    Object.defineProperty(Storage.prototype, 'setItem', {
+      value() {
+        throw new DOMException('Storage unavailable', 'QuotaExceededError');
+      },
+    });
+  });
+  await page.getByRole('button', { name: '启动专家团创作', exact: false }).click();
+  await expect(page.getByRole('alert').filter({ hasText: '无法保存请求标识' })).toContainText(
+    '暂不发送，以免刷新后重复计费。',
+  );
+  expect(fixture.creates).toHaveLength(0);
+});
+
+test('keeps a corrupt creation record until the author explicitly verifies existing tasks', async ({
+  page,
+}) => {
+  const fixture = await dynamicFixture(page);
+  await page.addInitScript((owner) => {
+    sessionStorage.setItem(`creator-ai:creation:${owner}`, '{invalid-json');
+  }, fixture.owner);
+  await page.goto('/');
+  await expect(
+    page.getByText('本地请求记录无法恢复，已停止新提交。', { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByLabel('这次，你想聊什么？')).toBeDisabled();
+  expect(fixture.creates).toHaveLength(0);
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.getByRole('button', { name: '核对后开始新创作' }).click();
+  await expect(page.getByLabel('这次，你想聊什么？')).toBeDisabled();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '核对后开始新创作' }).click();
+  await expect(page.getByLabel('这次，你想聊什么？')).toBeEnabled();
+  expect(fixture.creates).toHaveLength(0);
 });
 
 test('question draft survives reload, renders as text and submits only once', async ({

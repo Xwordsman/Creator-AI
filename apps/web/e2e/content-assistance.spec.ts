@@ -460,6 +460,24 @@ test('retains uncertain requests across refresh and retries the identical input 
   await expect(page.getByLabel('内容标题', { exact: true })).toHaveValue('发送后继续修改的稿件');
 });
 
+for (const value of [null, false]) {
+  test(`retains a corrupt assistance record (${value}) instead of authorizing a new paid call`, async ({
+    page,
+  }) => {
+    const state = await fixture(page);
+    const key = `creator-assistant:assistant-owner:${id}:pending`;
+    const raw = JSON.stringify(value);
+    await page.addInitScript(({ key, raw }) => sessionStorage.setItem(key, raw), { key, raw });
+    await page.goto(path);
+    await expect(page.getByRole('alert').filter({ hasText: '本地请求记录损坏' })).toBeVisible();
+    await expect(page.getByLabel('这一轮，你想说什么？', { exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '发送模拟请求', exact: true })).toBeDisabled();
+    expect(await page.evaluate((key) => sessionStorage.getItem(key), key)).toBe(raw);
+    expect(state.writes).toHaveLength(0);
+    expect(state.errors).toEqual([]);
+  });
+}
+
 test('polls active tasks, blocks duplicate submission and exposes unknown-call reconciliation', async ({
   page,
 }) => {

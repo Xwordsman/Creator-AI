@@ -36,6 +36,9 @@ async function fixture(page: Page) {
     providerCalls: 0,
     configured: true,
     loseResponse: false,
+    malformedResponse: false,
+    emptyResponse: false,
+    failHistory: false,
     holdNextHistory: false,
     releaseHistory: undefined as (() => void) | undefined,
   };
@@ -70,6 +73,7 @@ async function fixture(page: Page) {
     if (path === `/models/${model.id}/checks`) {
       if (req.method() === 'GET') {
         state.gets++;
+        if (state.failHistory) return route.abort('failed');
         const snapshot = structuredClone(state.history);
         if (state.holdNextHistory) {
           state.holdNextHistory = false;
@@ -87,6 +91,14 @@ async function fixture(page: Page) {
       if (state.loseResponse) {
         state.loseResponse = false;
         return route.abort('failed');
+      }
+      if (state.malformedResponse) {
+        state.malformedResponse = false;
+        return route.fulfill({ status: 400, contentType: 'text/html', body: 'Proxy response' });
+      }
+      if (state.emptyResponse) {
+        state.emptyResponse = false;
+        return json(null);
       }
       return json(state.history[0]);
     }
@@ -234,4 +246,49 @@ test('a delayed old history response cannot erase a completed check', async ({ p
   }
   await expect(page.getByText('基础协议通过', { exact: true })).toBeVisible();
   expect(state.posts).toHaveLength(1);
+});
+
+test('preserves a check key after an invalid 4xx response and retries it only on demand', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  state.malformedResponse = true;
+  await open(page);
+  await send(page);
+  await expect(page.getByRole('button', { name: '原样重试检查请求' })).toBeEnabled();
+  await page.reload();
+  await page.getByRole('button', { name: '检查连接 / 记录' }).click();
+  await page.getByRole('button', { name: '原样重试检查请求' }).click();
+  await expect(page.getByRole('button', { name: '原样重试检查请求' })).toHaveCount(0);
+  expect(state.posts).toHaveLength(2);
+  expect(state.posts[0]).toEqual(state.posts[1]);
+  expect(state.providerCalls).toBe(1);
+});
+
+test('does not permit a new paid check before its existing history can be read', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  state.failHistory = true;
+  await open(page);
+  await expect(page.getByRole('alert')).toContainText('无法连接服务');
+  await expect(page.getByRole('checkbox')).toBeDisabled();
+  await expect(page.getByRole('button', { name: '发送一次检查', exact: true })).toBeDisabled();
+  expect(state.providerCalls).toBe(0);
+  state.failHistory = false;
+  await page.getByRole('button', { name: '刷新检查记录' }).click();
+  await expect(page.getByRole('checkbox')).toBeEnabled();
+});
+
+test('does not mistake an empty HTTP success for a confirmed paid check', async ({ page }) => {
+  const state = await fixture(page);
+  state.emptyResponse = true;
+  await open(page);
+  await send(page);
+  await expect(page.getByRole('button', { name: '原样重试检查请求' })).toBeEnabled();
+  await expect(page.getByRole('checkbox')).toBeDisabled();
+  await page.getByRole('button', { name: '原样重试检查请求' }).click();
+  await expect(page.getByRole('button', { name: '原样重试检查请求' })).toHaveCount(0);
+  expect(state.posts[0]).toEqual(state.posts[1]);
+  expect(state.providerCalls).toBe(1);
 });

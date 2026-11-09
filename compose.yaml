@@ -94,7 +94,7 @@ services:
       retries: 5
 
   database:
-    image: postgres:17.6-bookworm
+    image: postgres:17.11-bookworm
     restart: unless-stopped
     environment:
       POSTGRES_DB: creator
@@ -113,7 +113,7 @@ services:
       - no-new-privileges:true
 
   redis:
-    image: redis:7.2.6-alpine
+    image: redis:7.2.17-alpine
     restart: unless-stopped
     command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
     volumes:

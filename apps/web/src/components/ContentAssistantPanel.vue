@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import {
   blockText,
   contentTurnInputSchema,
+  contentTurnReceiptSchema,
   documentSchema,
   localAssistantDraftSchema,
   manuscriptKey,
@@ -19,7 +20,7 @@ import {
   type ModelConnection,
   type Page,
 } from '@creator-ai/contracts';
-import { errorMessage, post, request, RequestError } from '../api/client';
+import { errorMessage, isDefinitiveRequestError, post, request, RequestError } from '../api/client';
 import { useSessionStore } from '../stores/session';
 import ContentWritingProfile from './ContentWritingProfile.vue';
 
@@ -116,10 +117,11 @@ try {
   storageFailed.value = true;
 }
 try {
-  const op = JSON.parse(sessionStorage.getItem(`${storageKey}:pending`) ?? 'null');
-  if (op) {
-    const parsed = contentTurnInputSchema.safeParse(op.input);
-    if (typeof op.key === 'string' && /^[a-zA-Z0-9_-]{16,128}$/.test(op.key) && parsed.success)
+  const raw = sessionStorage.getItem(`${storageKey}:pending`);
+  if (raw !== null) {
+    const op = JSON.parse(raw);
+    const parsed = contentTurnInputSchema.safeParse(op?.input);
+    if (typeof op?.key === 'string' && /^[a-zA-Z0-9_-]{16,128}$/.test(op.key) && parsed.success)
       pending.value = { key: op.key, input: parsed.data };
     else corruptPending.value = true;
     open.value = true;
@@ -264,8 +266,20 @@ async function sendPending() {
   error.value = '';
   notice.value = '';
   try {
-    await post<ContentTurn>(endpoint, op.input, { 'Idempotency-Key': op.key });
+    const response = await post<ContentTurn>(endpoint, op.input, { 'Idempotency-Key': op.key });
     if (!active) return;
+    const receipt = contentTurnReceiptSchema.safeParse(response);
+    if (
+      !receipt.success ||
+      receipt.data.contentId !== props.contentId ||
+      receipt.data.baseRevision !== op.input.baseRevision ||
+      receipt.data.mode !== op.input.mode
+    )
+      throw new RequestError(
+        '服务返回了无效协作任务收据，请保留原请求核对。',
+        200,
+        'INVALID_RESPONSE',
+      );
     if (!store('pending', null))
       throw new Error('任务已接收，但无法清除本地标识。请原样重试核对。');
     pending.value = null;
@@ -278,13 +292,7 @@ async function sendPending() {
     await loadHistory();
   } catch (reason) {
     if (!active) return;
-    if (
-      reason instanceof RequestError &&
-      reason.status >= 400 &&
-      reason.status < 500 &&
-      ![408, 429].includes(reason.status) &&
-      reason.code !== 'INVALID_RESPONSE'
-    ) {
+    if (isDefinitiveRequestError(reason)) {
       if (store('pending', null)) pending.value = null;
       if (reason.code === 'CONTENT_CONFLICT') emit('conflict');
       if (reason.code === 'ASSISTANCE_IN_PROGRESS') await loadHistory();

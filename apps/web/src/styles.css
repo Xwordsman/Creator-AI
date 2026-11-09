@@ -834,6 +834,16 @@ svg {
   color: var(--amber);
   border-color: #eaddc0;
 }
+.request-recovery {
+  flex-wrap: wrap;
+}
+.request-recovery > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+.request-recovery > .el-button + .el-button {
+  margin-left: 0;
+}
 .empty-state {
   text-align: center;
   padding: 60px 24px;

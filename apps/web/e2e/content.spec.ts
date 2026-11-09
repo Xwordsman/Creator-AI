@@ -27,7 +27,13 @@ test('recovers unfinished title and heading without saving an invalid version', 
 });
 async function fixture(
   page: Page,
-  options: { isMock?: boolean; loseSave?: boolean; conflictSave?: boolean } = {},
+  options: {
+    isMock?: boolean;
+    loseSave?: boolean;
+    conflictSave?: boolean;
+    malformedSave?: boolean;
+    emptySaveReceipt?: boolean;
+  } = {},
 ) {
   const initial: ContentVersion = {
     version: 1,
@@ -193,6 +199,14 @@ async function fixture(
         lost = true;
         return route.abort('failed');
       }
+      if (options.malformedSave && !lost && api.endsWith('/versions')) {
+        lost = true;
+        return route.fulfill({ status: 400, contentType: 'text/html', body: 'Proxy response' });
+      }
+      if (options.emptySaveReceipt && !lost && api.endsWith('/versions')) {
+        lost = true;
+        return json(null);
+      }
       return json(detail);
     }
     return fail('NOT_FOUND', 404);
@@ -352,4 +366,123 @@ test('content library links to the editor and shows permanent mock provenance', 
       exact: true,
     }),
   ).toBeVisible();
+});
+
+test('retains the recoverable local draft when reading the latest version fails', async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.goto(path);
+  await page.getByLabel('内容标题', { exact: true }).fill('服务器断线也不能丢掉的本地稿');
+  const readUrl = `**/api/v1${path}`;
+  await page.route(readUrl, (route) => route.abort('failed'));
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '读取服务器最新版本', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('无法连接服务');
+  await page.unroute(readUrl);
+  await page.reload();
+  await expect(page.getByLabel('内容标题', { exact: true })).toHaveValue(
+    '服务器断线也不能丢掉的本地稿',
+  );
+});
+
+test('recovers an existing local draft after retrying a failed initial read', async ({ page }) => {
+  await fixture(page);
+  await page.addInitScript(
+    ({ id }) => {
+      sessionStorage.setItem(
+        `creator-content:content-owner:${id}:draft`,
+        JSON.stringify({
+          baseRevision: 1,
+          title: '初次读取失败后仍需恢复的稿件',
+          document: {
+            type: 'doc',
+            content: [{ type: 'paragraph', content: [{ type: 'text', text: '未保存的正文。' }] }],
+          },
+          note: '',
+        }),
+      );
+    },
+    { id },
+  );
+  let failRead = true;
+  await page.route(`**/api/v1${path}`, (route) =>
+    failRead ? route.abort('failed') : route.fallback(),
+  );
+  await page.goto(path);
+  await expect(page.getByRole('alert')).toContainText('无法连接服务');
+  failRead = false;
+  await page.getByRole('button', { name: '读取服务器最新版本', exact: true }).click();
+  await expect(page.getByLabel('内容标题', { exact: true })).toHaveValue(
+    '初次读取失败后仍需恢复的稿件',
+  );
+});
+
+test('keeps an accepted save pending when a proxy returns an invalid 4xx response', async ({
+  page,
+}) => {
+  const state = await fixture(page, { malformedSave: true });
+  await page.goto(path);
+  await page.getByLabel('内容标题', { exact: true }).fill('代理响应不能替代保存收据');
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click();
+  await expect(page.getByText('请求结果待确认', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('内容标题', { exact: true })).toBeDisabled();
+  await page.reload();
+  await page.getByRole('button', { name: '原样重试并核对', exact: true }).click();
+  await expect(page.getByText('请求结果待确认', { exact: true })).toHaveCount(0);
+  expect(state.writes).toHaveLength(2);
+  expect(state.writes[0]).toEqual(state.writes[1]);
+  expect(state.versions).toHaveLength(2);
+});
+
+test('blocks new writes rather than overwriting a corrupt pending request record', async ({
+  page,
+}) => {
+  await fixture(page);
+  await page.addInitScript(
+    ({ id }) => {
+      sessionStorage.setItem(`creator-content:content-owner:${id}:pending`, '{invalid-json');
+    },
+    { id },
+  );
+  await page.goto(path);
+  await expect(page.getByRole('alert')).toContainText('本地请求记录');
+  await expect(page.getByLabel('内容标题', { exact: true })).toBeDisabled();
+  expect(
+    await page.evaluate(
+      ({ id }) => sessionStorage.getItem(`creator-content:content-owner:${id}:pending`),
+      { id },
+    ),
+  ).toBe('{invalid-json');
+});
+
+test('uses a confirmed save receipt when the following latest-version read fails', async ({
+  page,
+}) => {
+  const state = await fixture(page);
+  await page.goto(path);
+  await page.getByLabel('内容标题', { exact: true }).fill('已经确认保存的标题');
+  await page.route(`**/api/v1${path}`, (route) => route.abort('failed'));
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('无法连接服务');
+  await expect(page.getByText('v2 · 修订 2', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存新版本', exact: true })).toBeDisabled();
+  expect(state.versions).toHaveLength(2);
+});
+
+test('does not discard a local manuscript for an empty successful save receipt', async ({
+  page,
+}) => {
+  const state = await fixture(page, { emptySaveReceipt: true });
+  await page.goto(path);
+  await page.getByLabel('内容标题', { exact: true }).fill('收据必须包含实际保存版本');
+  await page.getByRole('button', { name: '保存新版本', exact: true }).click();
+  await expect(page.getByText('请求结果待确认', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('内容标题', { exact: true })).toHaveValue(
+    '收据必须包含实际保存版本',
+  );
+  await page.getByRole('button', { name: '原样重试并核对', exact: true }).click();
+  await expect(page.getByText('请求结果待确认', { exact: true })).toHaveCount(0);
+  expect(state.writes[0]).toEqual(state.writes[1]);
+  expect(state.versions).toHaveLength(2);
 });

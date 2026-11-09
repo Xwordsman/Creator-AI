@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { documentSchema, type SafeDocument } from './document';
 import type { Account, RunStatus } from './index';
 import type { WritingProfileReceipt } from './writing-cards';
+import { runReceiptSchema } from './run-status';
 
 export const contentAnnotationSchema = z
   .strictObject({
@@ -47,6 +48,12 @@ export type ContentAnnotation = z.infer<typeof contentAnnotationSchema>;
 export type ContentSuggestion = z.infer<typeof contentSuggestionSchema>;
 export type ContentTurnInput = z.infer<typeof contentTurnInputSchema>;
 export type ContentAssistantResult = z.infer<typeof contentAssistantResultSchema>;
+export const contentTurnReceiptSchema = runReceiptSchema.extend({
+  contentId: z.uuid(),
+  baseRevision: z.number().int().positive(),
+  baseVersion: z.number().int().positive(),
+  mode: z.enum(['discuss', 'revise']),
+});
 export interface ContentSelection {
   blockIndex: number;
   blockText: string;

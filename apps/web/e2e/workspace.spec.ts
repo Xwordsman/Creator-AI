@@ -533,10 +533,15 @@ test('retains feedback and idempotency on uncertain submission without automatic
   await page.getByLabel('这一轮，你想怎么改？').fill('缩短开头，保留主要结论。');
   await page.getByRole('button', { name: '生成模拟修改稿' }).click();
   await expect(page.getByRole('alert')).toContainText('暂不可用');
+  await expect(page.getByLabel('这一轮，你想怎么改？')).toBeDisabled();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
   expect(keys).toHaveLength(1);
   await page.reload();
   await page.reload();
   await expect(page.getByLabel('这一轮，你想怎么改？')).toHaveValue('缩短开头，保留主要结论。');
+  await expect(page.getByLabel('这一轮，你想怎么改？')).toBeDisabled();
   await page.getByRole('button', { name: '生成模拟修改稿' }).click();
   await expect(page.getByRole('alert')).toContainText('暂不可用');
   expect(keys).toHaveLength(2);
@@ -577,6 +582,95 @@ test('a late continuation response cannot navigate away from a different draft',
   await received;
   await expect(page.getByRole('heading', { name: '每个想法，都有来处。' })).toBeVisible();
   await expect(page).toHaveURL(/\/runs$/);
+});
+
+test('does not dispatch a continuation when storing its retry record fails', async ({ page }) => {
+  const fixture = await mockApi(page);
+  await page.goto('/');
+  await page.getByLabel('这次，你想聊什么？').fill('修改请求存储失败测试');
+  await page.getByRole('button', { name: '生成模拟草稿', exact: true }).click();
+  await expect(page.getByLabel('这一轮，你想怎么改？')).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(Storage.prototype, 'setItem', {
+      value() {
+        throw new DOMException('Storage unavailable', 'QuotaExceededError');
+      },
+    });
+  });
+  await page.getByLabel('这一轮，你想怎么改？').fill('缩短开头，保留主要结论。');
+  await page.getByRole('button', { name: '生成模拟修改稿' }).click();
+  await expect(page.getByRole('alert')).toContainText('暂不发送');
+  expect(fixture.runs).toHaveLength(1);
+});
+
+test('keeps uncertain continuation requirements locked when retry storage becomes unavailable', async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.goto('/');
+  await page.getByLabel('这次，你想聊什么？').fill('重试期间存储失效测试');
+  await page.getByRole('button', { name: '生成模拟草稿', exact: true }).click();
+  const posts: { key: string; input: unknown }[] = [];
+  await page.route('**/creation-runs/*/continue', async (route) => {
+    posts.push({
+      key: route.request().headers()['idempotency-key']!,
+      input: route.request().postDataJSON(),
+    });
+    return route.abort('failed');
+  });
+  const feedback = page.getByLabel('这一轮，你想怎么改？');
+  await feedback.fill('保留观点，仅缩短开场。');
+  await page.getByRole('button', { name: '生成模拟修改稿' }).click();
+  await expect(feedback).toBeDisabled();
+  await page.evaluate(() => {
+    Object.defineProperty(Storage.prototype, 'setItem', {
+      value() {
+        throw new DOMException('Storage unavailable', 'QuotaExceededError');
+      },
+    });
+  });
+  await page.getByRole('button', { name: '生成模拟修改稿' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: '暂不发送' })).toBeVisible();
+  await expect(feedback).toBeDisabled();
+  expect(posts).toHaveLength(1);
+  await page.reload();
+  await expect(feedback).toBeDisabled();
+  await expect(feedback).toHaveValue('保留观点，仅缩短开场。');
+  await page.getByRole('button', { name: '生成模拟修改稿' }).click();
+  await expect(page.getByRole('alert')).toContainText('无法连接服务');
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
+});
+
+test('allows new continuation requirements only after explicitly checking an uncertain request', async ({
+  page,
+}) => {
+  await mockApi(page);
+  await page.goto('/');
+  await page.getByLabel('这次，你想聊什么？').fill('修改要求锁定测试');
+  await page.getByRole('button', { name: '生成模拟草稿', exact: true }).click();
+  const posts: { key: string; input: unknown }[] = [];
+  await page.route('**/creation-runs/*/continue', async (route) => {
+    posts.push({
+      key: route.request().headers()['idempotency-key']!,
+      input: route.request().postDataJSON(),
+    });
+    return route.abort('failed');
+  });
+  const feedback = page.getByLabel('这一轮，你想怎么改？');
+  await feedback.fill('保留主要观点。');
+  await page.getByRole('button', { name: '生成模拟修改稿' }).click();
+  await expect(feedback).toBeDisabled();
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.getByRole('button', { name: '核对后修改要求' }).click();
+  await expect(feedback).toBeDisabled();
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '核对后修改要求' }).click();
+  await feedback.fill('改用另一段真实开场。');
+  await page.getByRole('button', { name: '生成模拟修改稿' }).click();
+  await expect(feedback).toBeDisabled();
+  expect(posts).toHaveLength(2);
+  expect(posts[0]!.key).not.toBe(posts[1]!.key);
 });
 
 test('an expired SSE handshake returns to login rather than reconnecting forever', async ({

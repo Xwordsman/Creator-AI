@@ -24,6 +24,9 @@ async function sourceFixture(t) {
     '.gitignore',
     '.dockerignore',
     '.prettierignore',
+    '.prettierrc.json',
+    '.node-version',
+    '.gitattributes',
     '.env.example',
     '.env.production.example',
     'compose.yaml',
@@ -60,6 +63,9 @@ test('release allowlist excludes private env, local data, dependencies and gener
   const files = await collectReleaseFiles(root);
   assert.ok(files.includes('.env.production.example'));
   assert.ok(files.includes('apps/server/src/index.ts'));
+  assert.ok(files.includes('.prettierrc.json'));
+  assert.ok(files.includes('.node-version'));
+  assert.ok(files.includes('.gitattributes'));
   assert.equal(
     files.some((path) => path.includes('private') || path.endsWith('token.pem')),
     false,

@@ -25,7 +25,7 @@ Creator-AI 是面向个人创作者的自部署 Web 工作台：保存账号定�
 
 当前还支持账号默认专家、技能版本引用及专家/自建技能历史恢复为新版本。当前不包含：通用单专家聊天、脚本/MCP/浏览器/外部检索、账号素材上传与档案编辑/删除、独立专家试运行、图片与平台专属排版、跨文章长期偏好、定时计划、视频制作或自动发布。通用 HTML 导出不保证公众号/头条样式兼容。动态团队为受限协议，不是无限自治网络。三项内置 Skills 仍只读。只读工具不授予脚本、网络或桌面权限；真实模型内容质量与第三方兼容性仍需验证。
 
-完整范围见 [产品文档](docs/README.md)，实际进度与测试边界见 [实施状态](docs/10-implementation-status.md)。
+完整范围见 [产品文档](docs/README.md)，实际进度与测试边界见 [实施状态](docs/10-implementation-status.md)，本次问题修复与安全结论见 [项目检查报告](docs/22-project-audit.md)。
 
 已按用户要求，将 WorkBuddy 专家、Skills、专家团的完整功能语义纳入必做目标，采用独立实现而非复制私有代码与内容。当前完成配置与受限执行子集；不能把结构化阶段等同于完整自主团队。范围见 [能力对齐计划](docs/13-workbuddy-capability-plan.md)，配置/预算/恢复见 [Agent 运行契约](docs/14-agent-runtime.md)。
 
@@ -43,7 +43,7 @@ PostgreSQL 保存业务事实；Redis / BullMQ 负责执行调度。任务和 Ou
 
 ## 服务器安装
 
-使用发布包中的生产配置，浏览器通过 HTTPS 域名访问。服务器需要 Docker Engine、Compose 2.24.4 以上；以下自动安装命令另需 Node.js 24，不需 pnpm 或主机安装项目依赖。只安装 Docker 的步骤、备份、升级和恢复见 [服务器安装手册](docs/21-production-release.md)。
+使用发布包中的生产配置，浏览器通过 HTTPS 域名访问。服务器需要 Docker Engine、Compose 2.24.4 以上；以下自动安装命令另需 Node.js 24.22.2 以上（24.x），不需 pnpm 或主机安装项目依赖。只安装 Docker 的步骤、备份、升级和恢复见 [服务器安装手册](docs/21-production-release.md)。
 
 进入解压后的安装目录，使用自己的域名与模型服务主机：
 
@@ -71,13 +71,13 @@ node scripts/production.mjs backup
 node scripts/production.mjs upgrade
 ```
 
-升级先构建镜像、停写、备份再迁移，失败时应用保持停止，不删除数据卷。数据库备份不包含 `.env.production`、Redis 或证书，主密钥必须单独保管；恢复先在新项目核对业务和调用账本，再决定是否恢复 Worker，详见安装手册。
+升级先构建镜像、停写、核验备份，再更新 PostgreSQL/Redis 基础容器并迁移，失败时应用保持停止，不删除数据卷；原本停止的 Worker 不会自动启动。数据库备份不包含 `.env.production`、Redis 或证书，主密钥必须单独保管；恢复先在新项目核对业务和调用账本，再决定是否恢复 Worker，详见安装手册。
 
 本机没有 Docker，当前不能提供实际容器启动和恢复演练结果。生产命令已接入 CI 检查，已有自动化测试不等于真实服务商质量或服务器验收完成。
 
 ## 本地开发
 
-已用于本轮构建与测试的工具：Node.js `24.18.0`、pnpm `11.25.0`。业务依赖使用精确版本和 `pnpm-lock.yaml`。容器中的 Linux 兼容性另行验证。
+本轮工具基线：Node.js `24.22.2`、pnpm `11.25.0`（见 `.node-version` 与 `packageManager`）。业务依赖使用精确版本和 `pnpm-lock.yaml`。容器中的 Linux 兼容性另行验证。
 
 安装 pnpm 后，在仓库根目录执行：
 
@@ -113,6 +113,7 @@ pnpm dev:web
 pnpm format:check
 pnpm lint
 pnpm typecheck
+pnpm audit:security
 pnpm test
 pnpm build
 pnpm --filter @creator-ai/web exec playwright install chromium
@@ -123,7 +124,7 @@ pnpm test:e2e
 
 `pnpm test:integration` 需要单独准备 PostgreSQL 和 Redis。通过进程环境设置 `TEST_DATABASE_URL` 和 `TEST_REDIS_URL`：数据库名必须以 `_test` 结尾，Redis URL 的库号必须是 `/15`。**测试会清空指定测试数据库的用户和关联业务表**，不得使用真实数据；推荐 Redis 同样使用独立测试实例，不指向业务队列。先构建 contracts，再运行测试。测试覆盖真实事务、幂等、版本/归属、BullMQ、SSE、能力包原子安装/并发冲突、独立成员与依赖、工具加载与拒绝、预算、取消、未知核对和账本恢复。
 
-CI 配置在 `.github/workflows/ci.yaml`，包含服务容器集成测试和镜像构建。配置存在不等于已经执行成功；当前验证结果详见实施状态文档。
+CI 配置在 `.github/workflows/ci.yaml`，包含服务容器集成测试、镜像构建和官方 npm 中危及以上漏洞门禁。配置存在不等于已经执行成功；当前验证结果详见实施状态文档。2026-11-09 的生产依赖检查无已知漏洞，全量依赖仍有 1 项仅用于 Jest 的低危、上游未修复告警，见检查报告；这不是永久安全保证。
 
 ### Docker 隔离冒烟验收
 

@@ -8,7 +8,7 @@
 
 运行要求：
 
-- Node.js 24.18.0；使用 pnpm 命令时需 pnpm 11.25.0。
+- Node.js 24.22.2；使用 pnpm 命令时需 pnpm 11.25.0。
 - 本机可用的 Docker Linux 容器引擎；Windows 可使用已配置好 Linux 后端的 Docker Desktop。
 - Docker Compose 至少 2.24.4，支持 `!override`，以彻底替换正式网关的端口配置。
 - 当前 Docker endpoint 必须是本地 Unix socket 或 Windows named pipe；SSH/TCP endpoint 会被拒绝，不会切换 Docker context。

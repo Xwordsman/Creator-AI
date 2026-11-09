@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import type { RunStatus } from './run-status';
+export * from './run-status';
 import { writingCardsSchema } from './writing-cards';
 export * from './writing-cards';
 import { documentSchema } from './document';
@@ -95,8 +97,6 @@ export interface RunLineage {
   rootRunId: string;
   depth: number;
 }
-export type RunStatus =
-  'queued' | 'running' | 'waiting_user' | 'succeeded' | 'failed' | 'cancelled' | 'needs_review';
 export interface RunSnapshot {
   schemaVersion: 1;
   topic: string;

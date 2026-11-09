@@ -2,11 +2,12 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import {
   modelCheckLabels,
+  modelCheckReceiptSchema,
   modelFailureMessage,
   type ModelCheck,
   type ModelConnection,
 } from '@creator-ai/contracts';
-import { errorMessage, post, request, RequestError } from '../api/client';
+import { errorMessage, isDefinitiveRequestError, post, request, RequestError } from '../api/client';
 import { useSessionStore } from '../stores/session';
 
 const props = defineProps<{ connection: ModelConnection; canCall: boolean }>();
@@ -16,7 +17,8 @@ const endpoint = `/models/${props.connection.id}/checks`;
 const storageKey = `creator-model-check:${session.info?.user.id}:${props.connection.id}`;
 const checks = ref<ModelCheck[]>([]),
   busy = ref(false),
-  loading = ref(true);
+  loading = ref(true),
+  ready = ref(false);
 const error = ref(''),
   confirmed = ref(false),
   pendingKey = ref(''),
@@ -35,6 +37,7 @@ const canStart = computed(
     props.connection.enabled &&
     !busy.value &&
     !loading.value &&
+    ready.value &&
     !unresolved.value &&
     !pendingKey.value &&
     !storageError.value &&
@@ -66,10 +69,23 @@ async function load() {
   try {
     const result = await request<ModelCheck[]>(endpoint);
     if (!active || current !== generation) return;
+    if (
+      !Array.isArray(result) ||
+      result.some(
+        (check) =>
+          !modelCheckReceiptSchema.safeParse(check).success ||
+          check.modelConnectionId !== props.connection.id,
+      )
+    )
+      throw new RequestError('服务返回了无效检查记录，请重新核对。', 200, 'INVALID_RESPONSE');
     checks.value = result;
+    ready.value = true;
     if (checks.value.some((c) => c.status === 'running')) timer = setTimeout(load, 2000);
   } catch (reason) {
-    if (active && current === generation) error.value = errorMessage(reason);
+    if (active && current === generation) {
+      error.value = errorMessage(reason);
+      ready.value = false;
+    }
   } finally {
     if (active && current === generation) loading.value = false;
   }
@@ -83,24 +99,21 @@ async function send(retry = false) {
   busy.value = true;
   error.value = '';
   try {
-    await request<ModelCheck>(endpoint, {
+    const response = await request<ModelCheck>(endpoint, {
       method: 'POST',
       body: JSON.stringify({ confirm: true }),
       headers: { 'Idempotency-Key': key },
       signal: AbortSignal.timeout(30000),
     });
+    const receipt = modelCheckReceiptSchema.safeParse(response);
+    if (!receipt.success || receipt.data.modelConnectionId !== props.connection.id)
+      throw new RequestError('服务返回了无效检查收据，请保留原请求核对。', 200, 'INVALID_RESPONSE');
     store('');
     if (!active) return;
     confirmed.value = false;
     await load();
   } catch (reason) {
-    if (
-      reason instanceof RequestError &&
-      reason.status >= 400 &&
-      reason.status < 500 &&
-      ![408, 429].includes(reason.status)
-    )
-      store('');
+    if (isDefinitiveRequestError(reason)) store('');
     if (active) {
       error.value = errorMessage(reason);
       await load();
@@ -155,7 +168,7 @@ onBeforeUnmount(() => {
     </div>
     <el-checkbox
       v-model="confirmed"
-      :disabled="busy || !!pendingKey || !!unresolved || !canCall || !connection.enabled"
+      :disabled="busy || !ready || !!pendingKey || !!unresolved || !canCall || !connection.enabled"
       >我确认发送一次检查请求，可能产生费用</el-checkbox
     >
     <div class="dialog-actions">

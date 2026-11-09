@@ -8,3 +8,8 @@ allowBuilds:
   '@parcel/watcher': false
   msgpackr-extract: false
   unrs-resolver: false
+
+overrides:
+  multer: 2.5.0
+  glob: 14.0.4
+  minimatch: 11.0.5

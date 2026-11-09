@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 export const modelCheckInputSchema = z.strictObject({ confirm: z.literal(true) });
+export const modelCheckReceiptSchema = z.object({
+  id: z.uuid(),
+  modelConnectionId: z.uuid(),
+  status: z.enum(['running', 'passed', 'failed', 'unknown']),
+});
 export interface ModelCheck {
   id: string;
   modelConnectionId: string;

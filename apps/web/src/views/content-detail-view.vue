@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router';
 import {
   contentStatusLabels,
+  contentDetailSchema,
+  contentVersionSchema,
   saveContentSchema,
   localContentDraftSchema,
   restoreContentSchema,
@@ -21,7 +23,14 @@ import {
   type Page,
   type ReviewContentInput,
 } from '@creator-ai/contracts';
-import { downloadPackage, errorMessage, post, request, RequestError } from '../api/client';
+import {
+  downloadPackage,
+  errorMessage,
+  isDefinitiveRequestError,
+  post,
+  request,
+  RequestError,
+} from '../api/client';
 import { useSessionStore } from '../stores/session';
 import ContentEditor from '../components/ContentEditor.vue';
 import DraftPreview from '../components/DraftPreview.vue';
@@ -56,6 +65,7 @@ const error = ref(''),
   busy = ref(false),
   loading = ref(false),
   pending = ref<Pending | null>(null),
+  corruptPending = ref(false),
   storageFailed = ref(false);
 const versions = ref<Summary[]>([]),
   reviews = ref<ContentReview[]>([]),
@@ -87,7 +97,9 @@ const conflict = computed(
   () =>
     changedElsewhere.value || (!!detail.value && baseRevision.value !== detail.value.item.revision),
 );
-const locked = computed(() => busy.value || !!pending.value || loading.value);
+const locked = computed(
+  () => busy.value || !!pending.value || corruptPending.value || loading.value,
+);
 const clean = computed(() => !!detail.value && !dirty.value && !conflict.value && !locked.value);
 const exportVersion = computed(
   () => preview.value?.version ?? detail.value?.item.currentVersion ?? 1,
@@ -101,8 +113,20 @@ const needsAck = computed(
 );
 function readLocal<T>(suffix: string): T | null {
   try {
-    return JSON.parse(sessionStorage.getItem(`${scope.value}:${suffix}`) ?? 'null') as T | null;
+    const raw = sessionStorage.getItem(`${scope.value}:${suffix}`);
+    if (raw === null) return null;
+    const value: unknown = JSON.parse(raw);
+    if (
+      suffix === 'pending' &&
+      (typeof value !== 'object' || value === null || Array.isArray(value))
+    ) {
+      corruptPending.value = true;
+      return null;
+    }
+    return value as T;
   } catch {
+    if (suffix === 'pending') corruptPending.value = true;
+    else error.value = '本地编辑记录无法恢复，请先保留浏览器存储并核对备份。';
     return null;
   }
 }
@@ -116,6 +140,16 @@ function setLocal(suffix: string, value: unknown) {
     storageFailed.value = true;
     return false;
   }
+}
+function contentResult(value: unknown, id: string): ContentDetail {
+  const result = contentDetailSchema.safeParse(value);
+  if (!result.success || result.data.item.id !== id)
+    throw new RequestError(
+      '服务返回了无效稿件收据，本地编辑与请求标识已保留。',
+      200,
+      'INVALID_RESPONSE',
+    );
+  return result.data;
 }
 function apply(result: ContentDetail) {
   hydrating = true;
@@ -153,28 +187,33 @@ async function load(recover = true) {
   preview.value = null;
   previewGeneration++;
   try {
-    const result = await request<ContentDetail>(`/contents/${String(route.params.id)}`);
+    const id = String(route.params.id);
+    const response = await request<unknown>(`/contents/${id}`);
     if (current !== generation) return;
+    const result = contentResult(response, id);
     apply(result);
     if (recover) {
       const draft = readLocal<LocalDraft>('draft');
       const stored = readLocal<Pending>('pending');
-      if (stored) {
+      if (stored !== null) {
         const schemas = {
           versions: saveContentSchema,
           restore: restoreContentSchema,
           reviews: reviewContentSchema,
         };
-        const kind = stored.path?.split('/').at(-1) as keyof typeof schemas;
+        const kind =
+          typeof stored.path === 'string'
+            ? (stored.path.split('/').at(-1) as keyof typeof schemas)
+            : undefined;
         if (
+          kind &&
+          typeof stored.key === 'string' &&
           /^[a-zA-Z0-9_-]{16,128}$/.test(stored.key) &&
           stored.path === `/contents/${result.item.id}/${kind}` &&
           schemas[kind]?.safeParse(stored.input).success
         )
           pending.value = stored;
-        else
-          error.value =
-            '本地请求记录不可用。请先备份本地编辑，再核对服务器版本，不要假定上次操作未执行。';
+        else corruptPending.value = true;
       }
       if (draft && localContentDraftSchema.safeParse({ ...draft }).success) {
         title.value = draft.title;
@@ -185,7 +224,7 @@ async function load(recover = true) {
       }
       if (pending.value)
         notice.value = '上次操作的结果尚未确认。请使用原请求重试，不要重新提交另一份内容。';
-    }
+    } else setLocal('draft', null);
     await histories(current);
   } catch (reason) {
     if (current === generation) error.value = errorMessage(reason);
@@ -217,24 +256,20 @@ async function sendPending() {
   error.value = '';
   notice.value = '';
   try {
-    await post<ContentDetail>(op.path, op.input, { 'Idempotency-Key': op.key });
+    const response = await post<unknown>(op.path, op.input, { 'Idempotency-Key': op.key });
     if (current !== generation) return;
+    const result = contentResult(response, op.path.split('/')[2]!);
     if (!setLocal('pending', null))
       throw new Error('操作已保存，但无法清除本地请求标识。请保留页面并重试核对。');
     pending.value = null;
+    apply(result);
     setLocal('draft', null);
     notice.value = '操作已确认，正在读取服务器最新版本。';
     await load(false);
   } catch (reason) {
     if (current !== generation) return;
-    if (
-      reason instanceof RequestError &&
-      reason.status >= 400 &&
-      reason.status < 500 &&
-      ![408, 429].includes(reason.status)
-    ) {
-      setLocal('pending', null);
-      pending.value = null;
+    if (isDefinitiveRequestError(reason)) {
+      if (setLocal('pending', null)) pending.value = null;
       if (reason.code === 'CONTENT_CONFLICT') {
         changedElsewhere.value = true;
       }
@@ -275,8 +310,10 @@ async function applySuggestions(turn: ContentTurnDetail, ids: string[]) {
   busy.value = true;
   error.value = '';
   try {
-    const latest = await request<ContentDetail>(`/contents/${detail.value.item.id}`);
+    const id = detail.value.item.id;
+    const response = await request<unknown>(`/contents/${id}`);
     if (current !== generation) return;
+    const latest = contentResult(response, id);
     if (latest.item.revision !== baseRevision.value) {
       changedElsewhere.value = true;
       throw new Error('服务器稿件已变化，旧建议未应用。请先备份并核对最新版本。');
@@ -343,7 +380,10 @@ async function viewVersion(version: number) {
       `/contents/${String(route.params.id)}/versions/${version}`,
     );
     if (current === generation && token === previewGeneration) {
-      preview.value = result;
+      const parsed = contentVersionSchema.safeParse(result);
+      if (!parsed.success || parsed.data.version !== version)
+        throw new RequestError('服务返回了无效历史版本，请重新核对。', 200, 'INVALID_RESPONSE');
+      preview.value = parsed.data;
       ack.value = false;
     }
   } catch (reason) {
@@ -364,15 +404,14 @@ async function restore() {
   });
 }
 async function reloadLatest() {
-  if (pending.value || busy.value) return;
+  if (pending.value || busy.value || loading.value) return;
   if (
     dirty.value &&
     !window.confirm('读取服务器版本会放弃当前本地编辑。建议先下载本地备份，是否继续？')
   )
     return;
-  setLocal('draft', null);
   notice.value = '';
-  await load(false);
+  await load(!detail.value);
 }
 function backup() {
   const url = URL.createObjectURL(
@@ -420,13 +459,13 @@ async function exportFile() {
   }
 }
 function unload(event: BeforeUnloadEvent) {
-  if (dirty.value || pending.value || assistantAttention.value) {
+  if (dirty.value || pending.value || corruptPending.value || assistantAttention.value) {
     event.preventDefault();
     event.returnValue = '';
   }
 }
 const confirmLeave = () =>
-  !(dirty.value || pending.value || assistantAttention.value) ||
+  !(dirty.value || pending.value || corruptPending.value || assistantAttention.value) ||
   window.confirm('仍有未保存编辑或未确认请求。确认离开？本地恢复仅在此浏览器会话内有效。');
 onBeforeRouteLeave(confirmLeave);
 onBeforeRouteUpdate(confirmLeave);
@@ -438,6 +477,7 @@ watch(
     busy.value = false;
     detail.value = null;
     pending.value = null;
+    corruptPending.value = false;
     assistantAttention.value = false;
     aiUndo.value = null;
     selection.value = null;
@@ -472,12 +512,17 @@ onBeforeUnmount(() => {
       <h1>内容编辑台</h1>
       <p>人工稿独立保存 · 审核绑定版本 · 原始生成记录不变</p>
     </div>
-    <el-button :disabled="locked" @click="reloadLatest">读取服务器最新版本</el-button>
+    <el-button :disabled="busy || !!pending || loading" @click="reloadLatest"
+      >读取服务器最新版本</el-button
+    >
   </section>
   <p v-if="error" class="form-error" role="alert">{{ error }}</p>
   <p v-if="notice" class="notice-banner" role="status">{{ notice }}</p>
   <p v-if="storageFailed" class="form-error" role="alert">
     本地会话存储不可用，请勿关闭页面，建议下载本地备份。
+  </p>
+  <p v-if="corruptPending" class="form-error" role="alert">
+    本地请求记录不可用，已停止新写入。请先备份本地编辑，再核对服务器版本，不要假定上次操作未执行。
   </p>
   <div v-if="pending" class="notice-banner">
     <strong>请求结果待确认</strong>

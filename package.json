@@ -5,13 +5,14 @@
   "license": "UNLICENSED",
   "packageManager": "pnpm@11.25.0",
   "engines": {
-    "node": ">=24.18.0 <25"
+    "node": ">=24.22.2 <25"
   },
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @creator-ai/contracts build && pnpm -r typecheck",
+    "audit:security": "pnpm audit --audit-level=moderate --registry=https://registry.npmjs.org",
     "test": "pnpm test:tools && pnpm --filter @creator-ai/contracts build && pnpm -r test",
-    "test:tools": "node --test scripts/docker-smoke.test.mjs scripts/smoke-client.test.mjs scripts/production.test.mjs scripts/release.test.mjs",
+    "test:tools": "node --test scripts/deployment-assets.test.mjs scripts/docker-smoke.test.mjs scripts/smoke-client.test.mjs scripts/production.test.mjs scripts/release.test.mjs",
     "production": "node scripts/production.mjs",
     "release:package": "node scripts/release.mjs",
     "test:docker": "node scripts/docker-smoke.mjs",

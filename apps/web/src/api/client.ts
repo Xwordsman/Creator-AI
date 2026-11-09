@@ -1,4 +1,4 @@
-import type { ApiFailure, ApiSuccess, Page } from '@creator-ai/contracts';
+import type { Page } from '@creator-ai/contracts';
 
 let csrfToken = '';
 export const setCsrfToken = (value: string) => {
@@ -17,6 +17,17 @@ export class RequestError extends Error {
     super(message);
   }
 }
+// An invalid proxy response may hide an operation that the server already committed.
+export const isDefinitiveRequestError = (error: unknown): error is RequestError =>
+  error instanceof RequestError &&
+  error.status >= 400 &&
+  error.status < 500 &&
+  ![408, 429].includes(error.status) &&
+  error.code !== 'INVALID_RESPONSE';
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+const invalidResponse = (status: number) =>
+  new RequestError('服务返回了无效响应，请检查 API 配置。', status, 'INVALID_RESPONSE');
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
@@ -32,23 +43,29 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   } catch {
     throw new RequestError('无法连接服务，请检查网络和服务器状态。', 0, 'NETWORK_ERROR');
   }
-  let body: ApiSuccess<T> | ApiFailure;
+  if (response.status === 401 && path !== '/auth/login') unauthorizedHandler();
+  let body: unknown;
   try {
-    body = (await response.json()) as ApiSuccess<T> | ApiFailure;
+    body = await response.json();
   } catch {
-    throw new RequestError(
-      '服务返回了无效响应，请检查 API 配置。',
-      response.status,
-      'INVALID_RESPONSE',
-    );
+    throw invalidResponse(response.status);
   }
-  if (!response.ok || 'error' in body) {
-    if (response.status === 401 && path !== '/auth/login') unauthorizedHandler();
-    const error =
-      'error' in body ? body.error : { message: '请求失败，请重试。', code: 'REQUEST_FAILED' };
+  if (!isRecord(body)) throw invalidResponse(response.status);
+  if (Object.hasOwn(body, 'error')) {
+    const error = body.error;
+    if (
+      Object.hasOwn(body, 'data') ||
+      !isRecord(error) ||
+      typeof error.code !== 'string' ||
+      !error.code.trim() ||
+      typeof error.message !== 'string' ||
+      !error.message.trim()
+    )
+      throw invalidResponse(response.status);
     throw new RequestError(error.message, response.status, error.code);
   }
-  return body.data;
+  if (!response.ok || !Object.hasOwn(body, 'data')) throw invalidResponse(response.status);
+  return body.data as T;
 }
 export function post<T>(path: string, body: unknown, headers?: HeadersInit) {
   return request<T>(path, { method: 'POST', body: JSON.stringify(body), headers });

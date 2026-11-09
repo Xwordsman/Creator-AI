@@ -334,7 +334,11 @@ test('failed migration leaves applications stopped and retains the verified pre-
   });
   await assert.rejects(operator.perform('upgrade'), /Injected/);
   assert.equal(
-    calls.some((c) => ['up', 'start'].includes(c.command[0])),
+    calls.some(
+      (c) =>
+        ['up', 'start'].includes(c.command[0]) &&
+        ['gateway', 'api', 'worker'].some((name) => c.command.includes(name)),
+    ),
     false,
   );
   assert.equal(calls.at(-1).command[0], 'stop');
@@ -366,6 +370,46 @@ test('successful upgrade backs up before migrating, preserves a stopped Worker a
     calls.some((c) => c.command[0] === 'down' || c.command.includes('--volumes')),
     false,
   );
+});
+
+test('upgrade refreshes patched infrastructure only after backup and before migration', async (t) => {
+  const { operator, calls } = await operatorFixture(t);
+  await operator.perform('upgrade');
+  const dump = calls.findIndex((c) => c.command.includes('pg_dump'));
+  const infrastructure = calls.findIndex(
+    (c) => c.command[0] === 'up' && c.command.includes('database') && c.command.includes('redis'),
+  );
+  const migration = calls.findIndex((c) => c.command.at(-1) === 'migrate');
+  assert.ok(infrastructure > dump && migration > infrastructure);
+  assert.equal(calls[infrastructure].command.includes('worker'), false);
+  assert.equal(calls[infrastructure].command.includes('api'), false);
+  assert.ok(calls[infrastructure].command.includes('--no-deps'));
+});
+
+test('failed infrastructure refresh preserves the backup and cannot migrate or restart writers', async (t) => {
+  const { operator, calls, root } = await operatorFixture(t, {
+    failOn: (command) => command[0] === 'up' && command.includes('redis'),
+  });
+  await assert.rejects(operator.perform('upgrade'), /Injected/);
+  assert.equal(
+    calls.some((c) => c.command.includes('migrate')),
+    false,
+  );
+  assert.equal(
+    calls.some(
+      (c) =>
+        ['up', 'start'].includes(c.command[0]) &&
+        ['gateway', 'api', 'worker'].some((name) => c.command.includes(name)),
+    ),
+    false,
+  );
+  const [name] = await readdir(join(root, 'data', 'production-backups'));
+  assert.ok(
+    JSON.parse(
+      await readFile(join(root, 'data', 'production-backups', name, 'backup.json'), 'utf8'),
+    ).databaseSha256,
+  );
+  assert.equal(calls.at(-1).command[0], 'stop');
 });
 
 test('a production lock prevents concurrent operations without touching Docker', async (t) => {

@@ -75,3 +75,38 @@ export interface ContentDetail {
   item: ContentItem;
   version: ContentVersion;
 }
+
+export const contentVersionSchema = z.object({
+  version: z.number().int().min(1),
+  title: z.string().min(1).max(300),
+  document: documentSchema,
+  kind: z.enum(['generated', 'edit', 'restore']),
+  restoredFrom: z.number().int().min(1).nullable(),
+  note: z.string().max(1000),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+// Validate a receipt before replacing a local manuscript or removing its recovery record.
+export const contentDetailSchema = z
+  .object({
+    item: z.object({
+      id: z.uuid(),
+      sourceRunId: z.uuid(),
+      accountName: z.string().min(1).max(80),
+      platform: z.string().min(1).max(40),
+      isMock: z.boolean(),
+      title: z.string().min(1).max(300),
+      status: z.enum(['draft', 'pending_review', 'approved', 'changes_requested']),
+      currentVersion: z.number().int().min(1),
+      revision: z.number().int().min(1),
+      createdAt: z.iso.datetime({ offset: true }),
+      updatedAt: z.iso.datetime({ offset: true }),
+    }),
+    version: contentVersionSchema,
+  })
+  .refine(
+    ({ item, version }) =>
+      item.currentVersion === version.version &&
+      item.title === version.title &&
+      !(item.isMock && item.status === 'approved'),
+    'Content receipt does not match its saved version or provenance',
+  );

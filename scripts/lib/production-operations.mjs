@@ -251,6 +251,18 @@ export async function createProductionOperator({
           const resume = await pause();
           const directory = await dump();
           if (command === 'upgrade') {
+            // --no-deps on the application restart must not leave old security-pinned
+            // infrastructure running. Refresh it only after the verified backup.
+            await compose([
+              'up',
+              '-d',
+              '--no-deps',
+              '--wait',
+              '--wait-timeout',
+              '180',
+              'database',
+              'redis',
+            ]);
             await migrate();
             if (resume.length)
               await compose([

@@ -3,6 +3,7 @@ import WritingCardsPreview from '../components/WritingCardsPreview.vue';
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowRight, ArrowUpRight, Feather, Layers3, Sparkles } from '@lucide/vue';
+import { createRunSchema, runReceiptSchema } from '@creator-ai/contracts';
 import type {
   Account,
   CreationRun,
@@ -12,10 +13,23 @@ import type {
   Page,
   RunLimits,
 } from '@creator-ai/contracts';
-import { errorMessage, listAll, post, request } from '../api/client';
+import {
+  errorMessage,
+  isDefinitiveRequestError,
+  listAll,
+  post,
+  request,
+  RequestError,
+} from '../api/client';
+import { useSessionStore } from '../stores/session';
 
 const router = useRouter();
 const route = useRoute();
+const session = useSessionStore();
+const storageKey = `creator-ai:creation:${session.info?.user.id}`;
+const pending = ref<{ key: string; input: CreateRunInput } | null>(null),
+  corruptPending = ref(false),
+  storageFailed = ref(false);
 const accounts = ref<Account[]>([]);
 const experts = ref<Expert[]>([]);
 const models = ref<ModelConnection[]>([]);
@@ -26,8 +40,10 @@ const limits = reactive<RunLimits>({
   maxTotalTokens: 200000,
   maxDurationSeconds: 600,
 });
-const usingModel = computed(() =>
-  models.value.some((model) => model.id === modelConnectionId.value && model.enabled),
+const usingModel = computed(
+  () =>
+    !!pending.value?.input.modelConnectionId ||
+    models.value.some((model) => model.id === modelConnectionId.value && model.enabled),
 );
 const total = ref(0);
 const accountId = ref('');
@@ -86,7 +102,7 @@ watch(accountId, applyAccountExpert, { flush: 'sync' });
 watch(
   () => JSON.stringify(payload.value),
   () => {
-    key.value = null;
+    if (!pending.value) key.value = null;
   },
   { flush: 'sync' },
 );
@@ -98,9 +114,56 @@ watch(
   { flush: 'sync' },
 );
 watch(selectableExperts, (available) => {
-  if (!followsDefault.value && !available.some((expert) => expert.id === expertId.value))
+  if (
+    !pending.value &&
+    !followsDefault.value &&
+    !available.some((expert) => expert.id === expertId.value)
+  )
     expertId.value = '';
 });
+function storePending(value: typeof pending.value) {
+  try {
+    if (value) sessionStorage.setItem(storageKey, JSON.stringify(value));
+    else sessionStorage.removeItem(storageKey);
+    storageFailed.value = false;
+    return true;
+  } catch {
+    storageFailed.value = true;
+    return false;
+  }
+}
+function recoverPending() {
+  try {
+    const raw = sessionStorage.getItem(storageKey);
+    if (raw === null) return;
+    const saved = JSON.parse(raw);
+    const parsed = createRunSchema.safeParse(saved?.input);
+    if (
+      typeof saved?.key !== 'string' ||
+      !/^[a-zA-Z0-9_-]{16,128}$/.test(saved.key) ||
+      !parsed.success
+    ) {
+      corruptPending.value = true;
+      return;
+    }
+    pending.value = { key: saved.key, input: parsed.data };
+    key.value = saved.key;
+  } catch {
+    corruptPending.value = true;
+  }
+}
+function showPendingInput() {
+  if (!pending.value) return;
+  const input = pending.value.input;
+  accountId.value = input.accountId;
+  modelConnectionId.value = input.modelConnectionId ?? '';
+  followsDefault.value = input.expertId === undefined;
+  expertId.value = input.expertId ?? selectedAccount.value?.defaultExpertId ?? '';
+  topic.value = input.topic;
+  brief.value = input.brief;
+  if (input.limits) Object.assign(limits, input.limits);
+  teamMode.value = input.teamMode ?? 'staged';
+}
 async function load() {
   loading.value = true;
   error.value = '';
@@ -111,6 +174,7 @@ async function load() {
       request<Page<CreationRun>>('/creation-runs?pageSize=1'),
       request<ModelConnection[]>('/models'),
     ]);
+    if (!active) return;
     accounts.value = a;
     experts.value = e;
     models.value = m;
@@ -121,34 +185,87 @@ async function load() {
   } catch (reason) {
     error.value = errorMessage(reason);
   } finally {
-    loading.value = false;
+    if (active) {
+      showPendingInput();
+      loading.value = false;
+    }
   }
 }
 async function createRun() {
   if (
     busy.value ||
+    loading.value ||
+    !!pending.value ||
+    corruptPending.value ||
     !accountId.value ||
     !validExpert.value ||
     topic.value.trim().length < 2 ||
     (isTeam.value && !usingModel.value)
   )
     return;
+  error.value = '';
+  const parsed = createRunSchema.safeParse(payload.value);
+  if (!parsed.success) {
+    error.value = '请检查主题、补充要求与创作配置。';
+    return;
+  }
+  key.value ??= crypto.randomUUID();
+  const op = { key: key.value, input: parsed.data };
+  if (!storePending(op)) {
+    error.value = '无法保存请求标识，暂不发送，以免刷新后重复计费。';
+    return;
+  }
+  pending.value = op;
+  await sendPending();
+}
+async function sendPending() {
+  if (busy.value || !pending.value || corruptPending.value) return;
+  const op = JSON.parse(JSON.stringify(pending.value)) as NonNullable<typeof pending.value>;
+  if (!storePending(op)) {
+    error.value = '无法保留原请求，请恢复浏览器会话存储后重试。';
+    return;
+  }
   busy.value = true;
   error.value = '';
-  key.value ??= crypto.randomUUID();
-  const requestKey = key.value;
-  const body = payload.value;
   try {
-    const run = await post<CreationRun>('/creation-runs', body, { 'Idempotency-Key': requestKey });
-    if (active && key.value === requestKey) await router.push(`/runs/${run.id}`);
+    const run = await post<CreationRun>('/creation-runs', op.input, { 'Idempotency-Key': op.key });
+    if (!active) return;
+    if (!runReceiptSchema.safeParse(run).success)
+      throw new RequestError('服务返回了无效任务收据，请保留原请求核对。', 200, 'INVALID_RESPONSE');
+    if (!storePending(null)) throw new Error('任务已接收，但无法清除本地标识。请原样重试核对。');
+    pending.value = null;
+    await router.push(`/runs/${run.id}`);
   } catch (reason) {
-    if (active) error.value = errorMessage(reason);
+    if (active) {
+      if (isDefinitiveRequestError(reason) && storePending(null)) {
+        pending.value = null;
+        key.value = null;
+      }
+      error.value = errorMessage(reason);
+    }
   } finally {
-    busy.value = false;
+    if (active) busy.value = false;
   }
 }
+function newAfterCheck() {
+  if (
+    busy.value ||
+    !window.confirm(
+      '请先核对创作记录。开始新创作会使用新请求标识，可能重复计费；这不会取消上次任务。确认已核对并开始新创作？',
+    )
+  )
+    return;
+  if (!storePending(null)) return;
+  pending.value = null;
+  corruptPending.value = false;
+  key.value = null;
+  error.value = '';
+}
 let active = true;
-onMounted(load);
+onMounted(() => {
+  recoverPending();
+  void load();
+});
 onUnmounted(() => {
   active = false;
 });
@@ -186,6 +303,29 @@ onUnmounted(() => {
         </div>
         <span class="small-tag">文字创作</span>
       </div>
+      <p v-if="storageFailed" class="form-error" role="alert">
+        浏览器会话存储不可用，请保留页面并核对创作记录；新请求暂不发送。
+      </p>
+      <div
+        v-if="pending || corruptPending"
+        class="inline-note warning request-recovery"
+        role="status"
+      >
+        <p>
+          {{
+            corruptPending
+              ? '本地请求记录无法恢复，已停止新提交。'
+              : '上次创作请求结果待确认，账号、主题、模型与预算已锁定。'
+          }}
+          请先<router-link to="/runs">核对创作记录</router-link>，不会自动重发或取消任务。
+        </p>
+        <p v-if="pending?.input.accountRevision" class="fine-print">
+          原请求使用账号修订
+          {{ pending.input.accountRevision }}；列表显示当前配置，重试仍保留原请求。
+        </p>
+        <el-button v-if="pending" :loading="busy" @click="sendPending">原样重试创作请求</el-button>
+        <el-button :disabled="busy" @click="newAfterCheck">核对后开始新创作</el-button>
+      </div>
       <div v-if="!accounts.length || !selectableExperts.length" class="onboarding-note">
         <strong>先准备账号和可用的专家</strong>
         <p>账号保存表达背景，专家保存工作方法；专家团需要先选择模型连接。</p>
@@ -195,7 +335,12 @@ onUnmounted(() => {
           >添加创作专家 <ArrowUpRight :size="16"
         /></router-link>
       </div>
-      <el-form label-position="top" :disabled="busy" novalidate @submit.prevent="createRun">
+      <el-form
+        label-position="top"
+        :disabled="busy || !!pending || corruptPending"
+        novalidate
+        @submit.prevent="createRun"
+      >
         <el-form-item label="本次使用的模型">
           <el-select v-model="modelConnectionId" size="large" :empty-values="[null, undefined]">
             <el-option label="模拟模板（无模型费用，仅单专家）" value="" />
@@ -248,7 +393,11 @@ onUnmounted(() => {
         </div>
         <section v-if="isTeam" class="team-mode-panel" aria-labelledby="team-mode-title">
           <h3 id="team-mode-title">专家团协作方式</h3>
-          <el-radio-group v-model="teamMode" aria-label="专家团协作方式" :disabled="!usingModel">
+          <el-radio-group
+            v-model="teamMode"
+            aria-label="专家团协作方式"
+            :disabled="!usingModel || busy || !!pending || corruptPending"
+          >
             <el-radio-button value="staged">分阶段协作</el-radio-button>
             <el-radio-button value="dynamic">动态协作</el-radio-button>
           </el-radio-group>
@@ -338,7 +487,14 @@ onUnmounted(() => {
             size="large"
             native-type="submit"
             :loading="busy"
-            :disabled="!accountId || !validExpert || topic.trim().length < 2"
+            :disabled="
+              busy ||
+              !!pending ||
+              corruptPending ||
+              !accountId ||
+              !validExpert ||
+              topic.trim().length < 2
+            "
             >{{
               usingModel
                 ? selectedExpert?.expertType === 'team'
