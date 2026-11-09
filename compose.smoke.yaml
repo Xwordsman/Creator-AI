@@ -1,0 +1,28 @@
+# Only used by scripts/docker-smoke.mjs with a fresh, randomly named project.
+# !override requires Docker Compose >= 2.24.4; no production ports are inherited.
+services:
+  gateway:
+    image: ${SMOKE_WEB_IMAGE:?Run pnpm test:docker}
+    environment:
+      SITE_ADDRESS: http://:80
+    ports: !override
+      - target: 80
+        published: '${SMOKE_HTTP_PORT:?Run pnpm test:docker}'
+        host_ip: 127.0.0.1
+        protocol: tcp
+  api:
+    image: ${SMOKE_SERVER_IMAGE:?Run pnpm test:docker}
+    networks: !override
+      - private
+    environment:
+      MODEL_MODE: mock
+      MODEL_ENCRYPTION_KEY: ''
+      MODEL_ALLOWED_HOSTS: ''
+  worker:
+    image: ${SMOKE_SERVER_IMAGE:?Run pnpm test:docker}
+    networks: !override
+      - private
+    environment:
+      MODEL_MODE: mock
+      MODEL_ENCRYPTION_KEY: ''
+      MODEL_ALLOWED_HOSTS: ''

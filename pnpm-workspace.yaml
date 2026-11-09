@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  '@nestjs/core': false
+  esbuild: true
+  '@parcel/watcher': false
+  msgpackr-extract: false
+  unrs-resolver: false

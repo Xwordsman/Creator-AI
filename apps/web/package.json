@@ -1,0 +1,33 @@
+{
+  "name": "@creator-ai/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@creator-ai/contracts": "workspace:*",
+    "vue": "3.5.44",
+    "vue-router": "4.6.4",
+    "pinia": "3.0.4",
+    "element-plus": "2.14.7",
+    "@tiptap/vue-3": "3.32.2",
+    "@tiptap/starter-kit": "3.32.2",
+    "@lucide/vue": "1.66.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "6.0.10",
+    "vite": "7.3.7",
+    "vue-tsc": "3.3.14",
+    "vitest": "3.2.7",
+    "@vue/test-utils": "2.5.1",
+    "jsdom": "26.1.0",
+    "@playwright/test": "1.64.1",
+    "@types/node": "24.19.2"
+  }
+}

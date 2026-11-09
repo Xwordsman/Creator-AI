@@ -1,0 +1,36 @@
+{
+  "name": "creator-ai",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@11.25.0",
+  "engines": {
+    "node": ">=24.18.0 <25"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm --filter @creator-ai/contracts build && pnpm -r typecheck",
+    "test": "pnpm test:tools && pnpm --filter @creator-ai/contracts build && pnpm -r test",
+    "test:tools": "node --test scripts/docker-smoke.test.mjs scripts/smoke-client.test.mjs scripts/production.test.mjs scripts/release.test.mjs",
+    "production": "node scripts/production.mjs",
+    "release:package": "node scripts/release.mjs",
+    "test:docker": "node scripts/docker-smoke.mjs",
+    "test:integration": "pnpm --filter @creator-ai/server test:integration",
+    "test:e2e": "pnpm --filter @creator-ai/web test:e2e",
+    "dev:web": "pnpm --filter @creator-ai/web dev",
+    "dev:api": "pnpm --filter @creator-ai/server dev:api",
+    "dev:worker": "pnpm --filter @creator-ai/server dev:worker",
+    "db:migrate": "pnpm --filter @creator-ai/server db:migrate",
+    "admin:create": "pnpm --filter @creator-ai/server admin:create",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint apps packages scripts"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "prettier": "3.9.10",
+    "eslint": "10.13.0",
+    "typescript-eslint": "8.72.1",
+    "eslint-plugin-vue": "10.12.0"
+  }
+}

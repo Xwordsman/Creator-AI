@@ -1,0 +1,28 @@
+# Server deployment entry point. Always combine with compose.yaml and .env.production.
+x-production-logging: &production-logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '3'
+
+x-production-environment: &production-environment
+  APP_ORIGIN: ${APP_ORIGIN:?Initialize .env.production first}
+  MODEL_MODE: configured
+  MODEL_ENCRYPTION_KEY: ${MODEL_ENCRYPTION_KEY:?Initialize .env.production first}
+  MODEL_ALLOWED_HOSTS: ${MODEL_ALLOWED_HOSTS:?Set exact model provider hosts}
+
+services:
+  gateway:
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set the production hostname}
+    logging: *production-logging
+  api:
+    environment: *production-environment
+    logging: *production-logging
+  worker:
+    environment: *production-environment
+    logging: *production-logging
+  database:
+    logging: *production-logging
+  redis:
+    logging: *production-logging

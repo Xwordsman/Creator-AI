@@ -1,0 +1,46 @@
+{
+  "name": "@creator-ai/server",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand",
+    "test:integration": "jest --config jest.integration.config.cjs --runInBand",
+    "dev:api": "tsx watch src/main-api.ts",
+    "dev:worker": "tsx watch src/main-worker.ts",
+    "start:api": "node dist/main-api.js",
+    "start:worker": "node dist/main-worker.js",
+    "db:migrate": "tsx src/cli.ts migrate",
+    "admin:create": "tsx src/cli.ts admin:create"
+  },
+  "dependencies": {
+    "@creator-ai/contracts": "workspace:*",
+    "@nestjs/common": "11.2.8",
+    "@nestjs/core": "11.2.8",
+    "@nestjs/platform-express": "11.2.8",
+    "bullmq": "5.81.5",
+    "dotenv": "18.0.9",
+    "express": "5.2.1",
+    "helmet": "8.3.0",
+    "ioredis": "5.11.1",
+    "pg": "8.23.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "typeorm": "0.3.31",
+    "yaml": "2.9.1",
+    "yauzl": "3.4.0",
+    "yazl": "3.3.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/jest": "30.0.0",
+    "@types/node": "24.19.2",
+    "@types/yauzl": "3.4.0",
+    "@types/yazl": "3.3.1",
+    "jest": "30.5.2",
+    "ts-jest": "29.4.15",
+    "tsx": "4.23.15"
+  }
+}
